@@ -1,0 +1,166 @@
+from scipy.spatial import distance as dist
+from imutils.video import VideoStream
+from imutils import face_utils
+from threading import Thread
+import numpy as np
+import argparse
+import imutils
+import time
+import dlib
+import cv2
+import os
+import scipy.io.wavfile
+
+def alarm(msg):
+    global alarm_status
+    global alarm_status2
+    global saying
+
+    while alarm_status:
+        print('call')
+        alarm_filename = "alarm.wav"
+        s = alarm_filename.open( alarm_filename , mode = 'rb' )
+        #s = 'espeak "'+msg+'"'
+        os.system(s)
+
+    if alarm_status2:
+        print('call')
+        saying = True
+        alarm_filename = "alarm.wav"
+        s = alarm_filename.open( alarm_filename , mode = 'rb' )
+        #s = 'espeak "' + msg + '"'
+        os.system(s)
+        saying = False
+
+def eye_aspect_ratio(eye):
+    A = dist.euclidean(eye[1], eye[5])
+    B = dist.euclidean(eye[2], eye[4])
+
+    C = dist.euclidean(eye[0], eye[3])
+
+    ear = (A + B) / (2.0 * C)
+
+    return ear
+
+def final_ear(shape):
+    (lStart, lEnd) = face_utils.FACIAL_LANDMARKS_IDXS["left_eye"]
+    (rStart, rEnd) = face_utils.FACIAL_LANDMARKS_IDXS["right_eye"]
+
+    leftEye = shape[lStart:lEnd]
+    rightEye = shape[rStart:rEnd]
+
+    leftEAR = eye_aspect_ratio(leftEye)
+    rightEAR = eye_aspect_ratio(rightEye)
+
+    ear = (leftEAR + rightEAR) / 2.0
+    return (ear, leftEye, rightEye)
+
+def lip_distance(shape):
+    top_lip = shape[50:53]
+    top_lip = np.concatenate((top_lip, shape[61:64]))
+
+    low_lip = shape[56:59]
+    low_lip = np.concatenate((low_lip, shape[65:68]))
+
+    top_mean = np.mean(top_lip, axis=0)
+    low_mean = np.mean(low_lip, axis=0)
+
+    distance = abs(top_mean[1] - low_mean[1])
+    return distance
+
+
+
+
+EYE_AR_THRESH = 0.3
+EYE_AR_CONSEC_FRAMES = 30
+YAWN_THRESH = 20
+alarm_status = False
+alarm_status2 = False
+saying = False
+COUNTER = 0
+
+print("-> Loading the predictor and detector...")
+#detector = dlib.get_frontal_face_detector()
+detector = cv2.CascadeClassifier("haarcascade_frontalface_default.xml")    #Faster but less accurate
+predictor = dlib.shape_predictor('shape_predictor_68_face_landmarks.dat')
+
+
+print("-> Starting Video Stream")
+#face_cascade = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
+vs = cv2.VideoCapture(0)
+#vs= VideoStream(usePiCamera=True).start()       //For Raspberry Pi
+time.sleep(1.0)
+
+while True:
+   
+ 
+    frame,img = vs.read()
+    cv2.resizeWindow('img', 500,500)
+    cv2.line(img,(500,250),(0,250),(0,255,0),1)
+    cv2.line(img,(250,0),(250,500),(0,255,0),1)
+    cv2.circle(img, (250, 250), 5, (255, 255, 255), -1)  
+    gray  = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    faces = detector.detectMultiScale(gray, 1.3)
+
+    #rects = detector(gray, 0)
+    rects = detector.detectMultiScale(gray, scaleFactor=1.1,
+minNeighbors=5, minSize=(30, 30),
+flags=cv2.CASCADE_SCALE_IMAGE)
+
+    #for rect in rects:
+    for (x, y, w, h) in rects:
+        rect = dlib.rectangle(int(x), int(y), int(x + w),int(y + h))
+       
+        shape = predictor(gray, rect)
+        shape = face_utils.shape_to_np(shape)
+
+        eye = final_ear(shape)
+        ear = eye[0]
+        leftEye = eye [1]
+        rightEye = eye[2]
+
+        distance = lip_distance(shape)
+
+        leftEyeHull = cv2.convexHull(leftEye)
+        rightEyeHull = cv2.convexHull(rightEye)
+        cv2.drawContours(img, [leftEyeHull], -1, (0, 255, 0), 1)
+        cv2.drawContours(img, [rightEyeHull], -1, (0, 255, 0), 1)
+
+        lip = shape[48:60]
+        cv2.drawContours(img, [lip], -1, (0, 255, 0), 1)
+
+        if ear < EYE_AR_THRESH:
+            COUNTER += 1
+
+            if COUNTER >= EYE_AR_CONSEC_FRAMES:
+                if alarm_status == False:
+                    alarm_status = True
+                    t = Thread(target=alarm, args=('wake up sir',))
+                    t.deamon = True
+                    t.start()
+
+                cv2.putText(img, "DROWSINESS ALERT!", (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+        else:
+            COUNTER = 0
+            alarm_status = False
+
+        if (distance > YAWN_THRESH):
+                cv2.putText(img, "Yawn Alert", (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                if alarm_status2 == False and saying == False:
+                    alarm_status2 = True
+                    t = Thread(target=alarm, args=('take some fresh air sir',))
+                    t.deamon = True
+                    t.start()
+        else:
+            alarm_status2 = False
+    cv2.imshow("img", img)
+    key = cv2.waitKey(1) & 0xFF
+
+    if key == ord("q"):
+        break
+
+cv2.destroyAllWindows()
+vs.stop()
